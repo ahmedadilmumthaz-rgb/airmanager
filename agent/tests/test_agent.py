@@ -175,6 +175,61 @@ wlanTxBytes=3621414189
         self.assertEqual(parsed["station_link"]["chain1_dbm"], -51)
         self.assertEqual(parsed["station_link"]["distance_meters"], 150)
 
+    def test_status_cgi_with_32char_device_id_hash_and_station_mode(self) -> None:
+        raw_status_cgi = {
+            "host": {
+                "hostname": "NEL1006",
+                "device_id": "d38fdad7166b64ad3364b9b61e5c159b",
+                "devmodel": "NanoStation 5AC loco",
+                "fwversion": "WA.ar934x.v8.7.9.46843.220329.1728",
+                "uptime": 213507,
+                "cpuload": 10.9,
+                "totalram": 61960,
+                "freeram": 14976,
+            },
+            "wireless": {
+                "mode": "sta-ptmp-ac",
+                "apmac": "18:E8:29:8E:B2:AC",
+                "essid": "BUDDIESNET6",
+                "frequency": "5665 MHz",
+                "chanbw": 20,
+                "txpower": 25,
+                "noisef": -92,
+                "sta": [
+                    {
+                        "mac": "18:E8:29:8E:B2:AC",
+                        "signal": -47,
+                        "noisefloor": -92,
+                        "chain_rssi": [-49, -51],
+                        "tx": 173.3,
+                        "rx": 173.3,
+                        "distance": 150,
+                        "uptime": 213415,
+                        "airmax": {
+                            "downlink_capacity": 146640,
+                            "uplink_capacity": 143520,
+                            "quality": 91,
+                        },
+                        "remote": {
+                            "hostname": "BUDDIESNET6-SECTOR",
+                            "platform": "LiteAP GPS",
+                            "ipaddr": "10.42.200.1",
+                        },
+                    }
+                ],
+            },
+            "interfaces": [
+                {"ifname": "ath0", "hwaddr": "E0:63:DA:F2:A1:B9"},
+                {"ifname": "eth0", "hwaddr": "E0:63:DA:F2:A1:B9"},
+            ],
+        }
+        parsed = parse_airos_status_json("10.61.200.185", raw_status_cgi)
+        self.assertEqual(parsed["mac_address"], "E0:63:DA:F2:A1:B9")
+        self.assertEqual(parsed["parent_ap_mac"], "18:E8:29:8E:B2:AC")
+        self.assertEqual(parsed["parent_ap_ip"], "10.42.200.1")
+        self.assertEqual(parsed["parent_ap_hostname"], "BUDDIESNET6-SECTOR")
+        self.assertEqual(parsed["station_link"]["signal_dbm"], -47)
+
 
 
 if __name__ == "__main__":

@@ -31,6 +31,13 @@ def normalize_mac(mac: str) -> str:
     return ":".join(cleaned[i : i + 2].upper() for i in range(0, 12, 2))
 
 
+def is_valid_mac(val: Any) -> bool:
+    if not isinstance(val, str):
+        return False
+    cleaned = re.sub(r"[^0-9A-Fa-f]", "", val.strip())
+    return len(cleaned) == 12
+
+
 def classify_airos_model(raw_model: str, product_code: str = "") -> tuple[str, str]:
     """Normalizes Ubiquiti airOS 8 device strings to ('LiteAP GPS' | 'Loco 5AC' | ..., code)."""
     combined = f"{raw_model} {product_code}".lower()
@@ -54,24 +61,31 @@ def parse_airos_status_json(ip_address: str, status_payload: dict[str, Any]) -> 
     role = "ap" if wmode.startswith("ap") else ("station" if wmode.startswith("sta") else "unknown")
 
     # Determine canonical hardware MAC address:
-    # In AP mode, wireless.apmac is the AP's own WLAN MAC.
-    # In Station mode (sta-ptmp-ac), wireless.apmac is the remote AP's MAC, while interfaces[ath0/eth0].hwaddr or host.device_id is the station's own MAC.
+    # Note: In /status.cgi on airOS 8.7.x, `host.device_id` is a 32-char hex UUID hash, NOT a 12-char MAC!
+    # The real 12-hex-char hardware MAC is in `interfaces[].hwaddr` (ath0/wlan0/eth0/br0) or `wireless.apmac`.
     iface_mac = None
-    for iface in interfaces:
-        if iface.get("ifname") in ("ath0", "wlan0", "br0", "eth0") and iface.get("hwaddr"):
-            iface_mac = iface["hwaddr"]
+    for preferred in ("ath0", "wlan0", "eth0", "br0"):
+        for iface in interfaces:
+            if iface.get("ifname") == preferred and is_valid_mac(iface.get("hwaddr")):
+                iface_mac = iface["hwaddr"]
+                break
+        if iface_mac:
             break
-    if not iface_mac and interfaces:
-        iface_mac = interfaces[0].get("hwaddr")
+    if not iface_mac:
+        for iface in interfaces:
+            if is_valid_mac(iface.get("hwaddr")):
+                iface_mac = iface["hwaddr"]
+                break
 
     if role == "station":
-        mac_candidate = host.get("device_id") or host.get("hwaddr") or iface_mac or wireless.get("apmac")
-        parent_ap_mac = normalize_mac(str(wireless["apmac"])) if wireless.get("apmac") else None
+        candidates = [iface_mac, host.get("hwaddr"), host.get("device_id"), wireless.get("apmac")]
+        parent_ap_mac = normalize_mac(str(wireless["apmac"])) if is_valid_mac(wireless.get("apmac")) else None
     else:
-        mac_candidate = wireless.get("apmac") or host.get("device_id") or host.get("hwaddr") or iface_mac
+        candidates = [wireless.get("apmac"), iface_mac, host.get("hwaddr"), host.get("device_id")]
         parent_ap_mac = None
 
-    mac_address = normalize_mac(str(mac_candidate or "78:8A:20:00:00:01"))
+    mac_candidate = next((c for c in candidates if is_valid_mac(c)), "78:8A:20:00:00:01")
+    mac_address = normalize_mac(str(mac_candidate))
 
     raw_model = str(host.get("devmodel") or "LiteAP GPS")
     prod_code = str(host.get("PrdID") or "")
@@ -116,8 +130,18 @@ def parse_airos_status_json(ip_address: str, status_payload: dict[str, Any]) -> 
             result["clients"] = parse_airos_sta_json(embedded_sta)
         elif role == "station" and parent_ap_mac:
             sta_entry = embedded_sta[0]
+            ap_remote = sta_entry.get("remote", {}) or {}
+            if ap_remote.get("hostname"):
+                result["parent_ap_hostname"] = str(ap_remote["hostname"])
+            if ap_remote.get("ipaddr") or sta_entry.get("lastip"):
+                result["parent_ap_ip"] = str(ap_remote.get("ipaddr") or sta_entry.get("lastip"))
+            if ap_remote.get("platform"):
+                ap_model, _ = classify_airos_model(str(ap_remote["platform"]))
+                result["parent_ap_model"] = ap_model
+
             polling = wireless.get("polling", {}) or {}
-            noise = int(wireless.get("noisef") or -92)
+            airmax_obj = sta_entry.get("airmax", {}) or {}
+            noise = int(sta_entry.get("noisefloor") or wireless.get("noisef") or -92)
             sig = int(sta_entry.get("signal") or wireless.get("signal") or -50)
             chain_rssi = sta_entry.get("chain_rssi") or wireless.get("chain_rssi") or []
             if len(chain_rssi) >= 2:
@@ -127,8 +151,17 @@ def parse_airos_status_json(ip_address: str, status_payload: dict[str, Any]) -> 
             else:
                 c0, c1 = sig, sig
 
-            dl_cap = int(polling.get("dl_capacity") or (sta_entry.get("airmax", {}) or {}).get("downlink_capacity") or 85)
-            ul_cap = int(polling.get("ul_capacity") or (sta_entry.get("airmax", {}) or {}).get("uplink_capacity") or dl_cap)
+            dl_cap = int(
+                polling.get("dl_capacity")
+                or airmax_obj.get("downlink_capacity")
+                or polling.get("capacity")
+                or 85
+            )
+            ul_cap = int(
+                polling.get("ul_capacity")
+                or airmax_obj.get("uplink_capacity")
+                or dl_cap
+            )
             if dl_cap > 100:
                 max_kbps = 173300.0 if result["channel_width_mhz"] <= 20 else 400000.0
                 dl_cap = min(99, max(10, int(round((dl_cap / max_kbps) * 100.0))))
@@ -143,18 +176,18 @@ def parse_airos_status_json(ip_address: str, status_payload: dict[str, Any]) -> 
                 "remote_firmware": result["firmware_version"],
                 "is_connected": True,
                 "signal_dbm": sig,
-                "remote_signal_dbm": int((sta_entry.get("remote", {}) or {}).get("signal") or sig),
+                "remote_signal_dbm": int(ap_remote.get("signal") or sig),
                 "chain0_dbm": c0,
                 "chain1_dbm": c1,
                 "noise_floor_dbm": noise,
                 "tx_rate_mbps": float(sta_entry.get("tx") or wireless.get("txrate") or 173.3),
                 "rx_rate_mbps": float(sta_entry.get("rx") or wireless.get("rxrate") or 173.3),
                 "airmax_capacity_pct": int(round((dl_cap + ul_cap) / 2.0)),
-                "airmax_quality_pct": int(polling.get("quality") or 90),
+                "airmax_quality_pct": int(polling.get("quality") or airmax_obj.get("quality") or 90),
                 "distance_meters": int(sta_entry.get("distance") or wireless.get("distance") or 150),
                 "connection_uptime_sec": int(sta_entry.get("uptime") or result["uptime_sec"]),
-                "tx_bytes": int((sta_entry.get("stats", {}) or {}).get("tx_bytes") or 0),
-                "rx_bytes": int((sta_entry.get("stats", {}) or {}).get("rx_bytes") or 0),
+                "tx_bytes": int(sta_entry.get("tx_bytes") or (sta_entry.get("stats", {}) or {}).get("tx_bytes") or 0),
+                "rx_bytes": int(sta_entry.get("rx_bytes") or (sta_entry.get("stats", {}) or {}).get("rx_bytes") or 0),
                 "tx_latency_ms": float(sta_entry.get("tx_latency") or 1.0),
             }
 
@@ -456,6 +489,7 @@ def run_airos_ssh_with_password(
                 output_chunks.append(chunk)
                 combined = b"".join(output_chunks)
                 if not password_sent and b"password:" in combined.lower():
+                    time.sleep(0.15)
                     os.write(master_fd, (password + "\n").encode("utf-8"))
                     password_sent = True
                     output_chunks.clear()
@@ -666,16 +700,10 @@ class AirOS8Client:
     ) -> dict[str, Any]:
         """
         Probes an airOS 8 radio using the credentials from the Web Dashboard.
-        Tries SSH (`mca-status` + `wstalist` on port 22) first for 100% compatibility with
-        airOS 8.7.x (`WA.ar934x.v8.7.9`), and falls back to HTTP/HTTPS (`/api/auth` + `/status.cgi`) if SSH is closed.
+        First uses HTTP/HTTPS (`/api/auth` + `/status.cgi` + `/sta.cgi`), and falls back
+        to SSH (`mca-status` + `wstalist` on port 22) if HTTP fails.
         """
-        ssh_error: Exception | None = None
-        if self.password:
-            try:
-                return self.probe_via_ssh(ssh_port=22, previous_counters=previous_counters)
-            except Exception as exc:
-                ssh_error = exc
-
+        http_error: Exception | None = None
         try:
             self.login()
             status_dict = self.fetch_status()
@@ -692,10 +720,17 @@ class AirOS8Client:
                     float(c.get("rx_throughput_kbps") or 0.0) for c in status_dict["clients"]
                 )
             return status_dict
-        except Exception as http_exc:
-            if ssh_error is not None:
-                raise RuntimeError(f"SSH probe error: {ssh_error}; HTTP probe error: {http_exc}") from http_exc
-            raise
+        except Exception as exc:
+            http_error = exc
+
+        if self.password:
+            try:
+                return self.probe_via_ssh(ssh_port=22, previous_counters=previous_counters)
+            except Exception as ssh_exc:
+                raise RuntimeError(f"HTTP probe error: {http_error}; SSH probe error: {ssh_exc}") from ssh_exc
+
+        assert http_error is not None
+        raise http_error
 
     def fetch_status(self) -> dict[str, Any]:
         raw = self._request_json("GET", "/status.cgi")
