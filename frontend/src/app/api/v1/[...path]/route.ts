@@ -15,17 +15,21 @@ async function proxyToBackend(
   const search = req.nextUrl.search || "";
   const targetUrl = `${BACKEND_BASE.replace(/\/$/, "")}/api/v1/${subPath}${search}`;
 
-  const headers = new Headers();
-  req.headers.forEach((value, key) => {
-    const k = key.toLowerCase();
-    if (k !== "host" && k !== "connection" && k !== "content-length") {
-      headers.set(key, value);
-    }
-  });
+  const forwardHeaders: Record<string, string> = {
+    "Content-Type": req.headers.get("content-type") || "application/json",
+  };
+  const authHdr = req.headers.get("authorization");
+  if (authHdr) {
+    forwardHeaders["Authorization"] = authHdr;
+  }
+  const agentTok = req.headers.get("x-agent-token");
+  if (agentTok) {
+    forwardHeaders["X-Agent-Token"] = agentTok;
+  }
 
   const init: RequestInit = {
     method: req.method,
-    headers,
+    headers: forwardHeaders,
     cache: "no-store",
   };
 

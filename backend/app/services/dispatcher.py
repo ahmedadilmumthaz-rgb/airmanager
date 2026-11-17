@@ -17,7 +17,7 @@ if _AGENT_PATH not in sys.path and os.path.isdir(_AGENT_PATH):
     sys.path.insert(0, _AGENT_PATH)
 
 from app.core.config import settings
-from app.core.security import create_access_token, verify_agent_token
+from app.core.security import create_access_token, verify_access_token, verify_agent_token
 from app.db.repository import AirManagerRepository, utc_now_iso
 from app.services.seeder import seed_initial_topology
 
@@ -68,7 +68,7 @@ class AirManagerDispatcher:
 
             # Auth
             if method == "POST" and path == "/api/v1/auth/login":
-                username = str(payload.get("username") or "")
+                username = str(payload.get("username") or "").strip()
                 password = str(payload.get("password") or "")
                 if username == settings.admin_username and password == settings.admin_password:
                     token = create_access_token(subject=username)
@@ -77,7 +77,63 @@ class AirManagerDispatcher:
                         "token_type": "bearer",
                         "username": username,
                     }
-                raise APIError(401, "Invalid administrator credentials")
+                raise APIError(401, "Invalid administrator username or password")
+
+            # Linux Agent Protocol Endpoints (/api/v1/agent/*) — authenticated via X-Agent-Token
+            if path.startswith("/api/v1/agent/"):
+                agent_tok = hdrs.get("x-agent-token")
+                if not verify_agent_token(agent_tok):
+                    raise APIError(401, "Invalid or missing X-Agent-Token")
+
+                if method == "POST" and path == "/api/v1/agent/heartbeat":
+                    pending = self.repo.list_tasks(status="pending", limit=20)
+                    return 200, {
+                        "server_time": utc_now_iso(),
+                        "agent_id": payload.get("agent_id", "linux-agent"),
+                        "pending_tasks": pending,
+                        "subnets": self.repo.list_subnets(),
+                        "routers": self.repo.list_routers(),
+                    }
+
+                if method == "POST" and path in ("/api/v1/agent/discovery-report", "/api/v1/agent/telemetry-report"):
+                    devices_payload = payload.get("devices") or []
+                    reconciled_results = []
+                    for dev_item in devices_payload:
+                        reconciled_results.append(self.repo.upsert_discovered_device(dev_item))
+                    return 200, {
+                        "processed": len(reconciled_results),
+                        "results": reconciled_results,
+                    }
+
+                if method == "POST" and path.startswith("/api/v1/agent/tasks/") and path.endswith("/result"):
+                    task_id = path.split("/")[5]
+                    status_val = str(payload.get("status", "completed"))
+                    updated = self.repo.complete_task(
+                        task_id=task_id,
+                        status=status_val,
+                        result=payload.get("result"),
+                        error_message=payload.get("error_message"),
+                    )
+                    if not updated:
+                        raise APIError(404, f"Task {task_id} not found")
+                    return 200, updated
+
+                raise APIError(404, f"Agent endpoint not found: {method} {path}")
+
+            # -----------------------------------------------------------------
+            # Operator Authentication Guard for all /api/v1/* endpoints
+            # -----------------------------------------------------------------
+            auth_header = hdrs.get("authorization") or ""
+            if not auth_header.lower().startswith("bearer "):
+                raise APIError(401, "Authentication required. Please sign in.")
+            raw_token = auth_header.split(" ", 1)[1].strip()
+            try:
+                token_claims = verify_access_token(raw_token)
+            except Exception as exc:
+                raise APIError(401, f"Session expired or invalid token: {exc}") from exc
+
+            if method == "GET" and path == "/api/v1/auth/me":
+                return 200, {"username": token_claims.get("sub", settings.admin_username), "authenticated": True}
 
             # Dashboard
             if method == "GET" and path == "/api/v1/dashboard/summary":
@@ -438,47 +494,6 @@ class AirManagerDispatcher:
                     "message": f"Reconciled MAC {target['mac_address']} ({target['hostname']}) IP drift: {old_ip} -> {new_ip}",
                     "reconciled": reconciled,
                 }
-
-            # -----------------------------------------------------------------
-            # Linux Agent Protocol Endpoints (/api/v1/agent/*)
-            # -----------------------------------------------------------------
-            if path.startswith("/api/v1/agent/"):
-                agent_tok = hdrs.get("x-agent-token")
-                if not verify_agent_token(agent_tok):
-                    raise APIError(401, "Invalid or missing X-Agent-Token")
-
-                if method == "POST" and path == "/api/v1/agent/heartbeat":
-                    pending = self.repo.list_tasks(status="pending", limit=20)
-                    return 200, {
-                        "server_time": utc_now_iso(),
-                        "agent_id": payload.get("agent_id", "linux-agent"),
-                        "pending_tasks": pending,
-                        "subnets": self.repo.list_subnets(),
-                        "routers": self.repo.list_routers(),
-                    }
-
-                if method == "POST" and path in ("/api/v1/agent/discovery-report", "/api/v1/agent/telemetry-report"):
-                    devices_payload = payload.get("devices") or []
-                    reconciled_results = []
-                    for dev_item in devices_payload:
-                        reconciled_results.append(self.repo.upsert_discovered_device(dev_item))
-                    return 200, {
-                        "processed": len(reconciled_results),
-                        "results": reconciled_results,
-                    }
-
-                if method == "POST" and path.startswith("/api/v1/agent/tasks/") and path.endswith("/result"):
-                    task_id = path.split("/")[5]
-                    status_val = str(payload.get("status", "completed"))
-                    updated = self.repo.complete_task(
-                        task_id=task_id,
-                        status=status_val,
-                        result=payload.get("result"),
-                        error_message=payload.get("error_message"),
-                    )
-                    if not updated:
-                        raise APIError(404, f"Task {task_id} not found")
-                    return 200, updated
 
             raise APIError(404, f"Endpoint not found: {method} {path}")
         except APIError as err:

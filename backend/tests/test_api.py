@@ -19,10 +19,23 @@ class TestAirManagerBackend(unittest.TestCase):
         self.tmp_db.close()
         self.repo = AirManagerRepository(db_path_or_url=f"sqlite:///{self.tmp_db.name}")
         self.dispatcher = AirManagerDispatcher(repo=self.repo, auto_seed=True)
+        code, login_resp = self.dispatcher.handle_request(
+            "POST",
+            "/api/v1/auth/login",
+            body={"username": settings.admin_username, "password": settings.admin_password},
+        )
+        assert code == 200 and isinstance(login_resp, dict)
+        self.auth_headers = {"authorization": f"Bearer {login_resp['access_token']}"}
 
     def tearDown(self) -> None:
         if os.path.exists(self.tmp_db.name):
             os.unlink(self.tmp_db.name)
+
+    def test_unauthenticated_dashboard_requests_are_rejected(self) -> None:
+        code, _ = self.dispatcher.handle_request("GET", "/api/v1/dashboard/summary")
+        self.assertEqual(code, 401)
+        code, _ = self.dispatcher.handle_request("GET", "/api/v1/clients")
+        self.assertEqual(code, 401)
 
     def test_credential_encryption_roundtrip(self) -> None:
         secret = "SuperSecret-airOS8-Pass#2026"
@@ -32,7 +45,9 @@ class TestAirManagerBackend(unittest.TestCase):
         self.assertEqual(recovered, secret)
 
     def test_seeded_dashboard_and_multi_subnet_topology(self) -> None:
-        code, data = self.dispatcher.handle_request("GET", "/api/v1/dashboard/summary")
+        code, data = self.dispatcher.handle_request(
+            "GET", "/api/v1/dashboard/summary", headers=self.auth_headers
+        )
         self.assertEqual(code, 200)
         assert isinstance(data, dict)
         kpis = data["kpis"]
@@ -83,7 +98,9 @@ class TestAirManagerBackend(unittest.TestCase):
 
     def test_connected_client_filters_and_management_actions(self) -> None:
         # Filter weak signal clients
-        code, weak_resp = self.dispatcher.handle_request("GET", "/api/v1/clients?health_filter=weak_signal")
+        code, weak_resp = self.dispatcher.handle_request(
+            "GET", "/api/v1/clients?health_filter=weak_signal", headers=self.auth_headers
+        )
         self.assertEqual(code, 200)
         assert isinstance(weak_resp, dict)
         self.assertGreater(weak_resp["total"], 0)
@@ -91,7 +108,9 @@ class TestAirManagerBackend(unittest.TestCase):
         client_id = target_client["id"]
 
         # 1. Kick / Reconnect station
-        code, kick_resp = self.dispatcher.handle_request("POST", f"/api/v1/clients/{client_id}/kick")
+        code, kick_resp = self.dispatcher.handle_request(
+            "POST", f"/api/v1/clients/{client_id}/kick", headers=self.auth_headers
+        )
         self.assertEqual(code, 200)
         assert isinstance(kick_resp, dict)
         self.assertEqual(kick_resp["task"]["task_type"], "kick_client")
@@ -99,7 +118,10 @@ class TestAirManagerBackend(unittest.TestCase):
 
         # 2. Block station MAC via ACL
         code, block_resp = self.dispatcher.handle_request(
-            "POST", f"/api/v1/clients/{client_id}/acl", body={"action": "block"}
+            "POST",
+            f"/api/v1/clients/{client_id}/acl",
+            body={"action": "block"},
+            headers=self.auth_headers,
         )
         self.assertEqual(code, 200)
         assert isinstance(block_resp, dict)
@@ -108,7 +130,10 @@ class TestAirManagerBackend(unittest.TestCase):
 
         # 3. Unblock station MAC
         code, unblock_resp = self.dispatcher.handle_request(
-            "POST", f"/api/v1/clients/{client_id}/acl", body={"action": "unblock"}
+            "POST",
+            f"/api/v1/clients/{client_id}/acl",
+            body={"action": "unblock"},
+            headers=self.auth_headers,
         )
         self.assertEqual(code, 200)
         assert isinstance(unblock_resp, dict)
@@ -116,7 +141,9 @@ class TestAirManagerBackend(unittest.TestCase):
         self.assertTrue(unblock_resp["client"]["is_connected"])
 
         # 4. Reboot remote Loco 5AC
-        code, reboot_resp = self.dispatcher.handle_request("POST", f"/api/v1/clients/{client_id}/reboot")
+        code, reboot_resp = self.dispatcher.handle_request(
+            "POST", f"/api/v1/clients/{client_id}/reboot", headers=self.auth_headers
+        )
         self.assertEqual(code, 200)
         assert isinstance(reboot_resp, dict)
         self.assertEqual(reboot_resp["task"]["task_type"], "reboot_device")

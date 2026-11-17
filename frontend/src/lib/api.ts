@@ -9,15 +9,49 @@ import type {
 } from "./types";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "";
+const TOKEN_STORAGE_KEY = "airmanager_auth_token";
+const USER_STORAGE_KEY = "airmanager_auth_user";
+
+export function getAuthToken(): string | null {
+  if (typeof window === "undefined") return null;
+  return window.localStorage.getItem(TOKEN_STORAGE_KEY);
+}
+
+export function getAuthUser(): string | null {
+  if (typeof window === "undefined") return null;
+  return window.localStorage.getItem(USER_STORAGE_KEY);
+}
+
+export function setAuthSession(token: string, username: string): void {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(TOKEN_STORAGE_KEY, token);
+  window.localStorage.setItem(USER_STORAGE_KEY, username);
+}
+
+export function clearAuthSession(): void {
+  if (typeof window === "undefined") return;
+  window.localStorage.removeItem(TOKEN_STORAGE_KEY);
+  window.localStorage.removeItem(USER_STORAGE_KEY);
+  window.dispatchEvent(new Event("airmanager-unauthorized"));
+}
 
 async function apiRequest<T>(path: string, options?: RequestInit): Promise<T> {
+  const token = getAuthToken();
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...((options?.headers as Record<string, string>) || {}),
+  };
+  if (token) {
+    headers["Authorization"] = `Bearer ${token}`;
+  }
+
   const res = await fetch(`${API_BASE}${path}`, {
-    headers: {
-      "Content-Type": "application/json",
-      ...(options?.headers || {}),
-    },
     ...options,
+    headers,
   });
+  if (res.status === 401 && path !== "/api/v1/auth/login") {
+    clearAuthSession();
+  }
   if (!res.ok) {
     const errBody = await res.json().catch(() => ({ detail: res.statusText }));
     throw new Error(errBody.detail || `Request failed (${res.status})`);
@@ -26,6 +60,21 @@ async function apiRequest<T>(path: string, options?: RequestInit): Promise<T> {
 }
 
 export const airManagerApi = {
+  login: async (username: string, password: string) => {
+    const resp = await apiRequest<{ access_token: string; username: string }>(
+      "/api/v1/auth/login",
+      {
+        method: "POST",
+        body: JSON.stringify({ username, password }),
+      }
+    );
+    setAuthSession(resp.access_token, resp.username);
+    return resp;
+  },
+
+  verifySession: () =>
+    apiRequest<{ username: string; authenticated: boolean }>("/api/v1/auth/me"),
+
   getDashboardSummary: () => apiRequest<DashboardSummary>("/api/v1/dashboard/summary"),
 
   listClients: (params?: { ap_device_id?: string; health_filter?: string; search?: string }) => {
