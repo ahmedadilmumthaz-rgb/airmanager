@@ -6,9 +6,9 @@
 
 import http from "node:http";
 
-const PORT = Number(process.env.PORT || 3000);
+const PORT = Number(process.env.PORT || 3002);
 const API_HOST = process.env.API_HOST || "127.0.0.1";
-const API_PORT = Number(process.env.API_PORT || 8000);
+const API_PORT = Number(process.env.API_PORT || 8001);
 
 const HTML_DOCUMENT = `<!DOCTYPE html>
 <html lang="en">

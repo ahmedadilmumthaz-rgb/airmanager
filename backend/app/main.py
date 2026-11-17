@@ -138,12 +138,12 @@ class _StdlibHTTPHandler(BaseHTTPRequestHandler):
         return
 
 
-def run_stdlib_server(host: str = "127.0.0.1", port: int = 8000) -> None:
+def run_stdlib_server(host: str = "127.0.0.1", port: int = 8001) -> None:
     server = ThreadingHTTPServer((host, port), _StdlibHTTPHandler)
     print(f"AirManager Backend listening on http://{host}:{port}")
     server.serve_forever()
 
 
 if __name__ == "__main__":
-    port = int(os.getenv("PORT", "8000"))
+    port = int(os.getenv("PORT", "8001"))
     run_stdlib_server(host="127.0.0.1", port=port)

@@ -11,7 +11,7 @@ class AgentConfig:
         default_factory=lambda: os.getenv("AIRMANAGER_AGENT_ID", f"linux-agent-{socket.gethostname()}")
     )
     backend_url: str = field(
-        default_factory=lambda: os.getenv("AIRMANAGER_BACKEND_URL", "http://127.0.0.1:8000")
+        default_factory=lambda: os.getenv("AIRMANAGER_BACKEND_URL", "http://127.0.0.1:8001")
     )
     agent_token: str = field(
         default_factory=lambda: os.getenv(
