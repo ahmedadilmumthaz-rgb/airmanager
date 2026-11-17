@@ -8,8 +8,17 @@ export default function DiscoveryPage() {
   const [subnets, setSubnets] = useState<SubnetItem[]>([]);
   const [routers, setRouters] = useState<RouterItem[]>([]);
   const [credentials, setCredentials] = useState<CredentialProfileItem[]>([]);
-  const [cidrInput, setCidrInput] = useState("");
-  const [subnetNameInput, setSubnetNameInput] = useState("");
+
+  // Live Radio Web Login & Probe State (defaults to 'admin' and HTTP port 80)
+  const [probeIp, setProbeIp] = useState("10.61.200.185");
+  const [radioUser, setRadioUser] = useState("admin");
+  const [radioPassword, setRadioPassword] = useState("");
+  const [radioPort, setRadioPort] = useState<number>(80);
+  const [probing, setProbing] = useState(false);
+
+  // Add Subnet State
+  const [cidrInput, setCidrInput] = useState("10.61.200.0/24");
+  const [subnetNameInput, setSubnetNameInput] = useState("Production airOS 8 Subnet");
   const [banner, setBanner] = useState<string | null>(null);
 
   const loadAll = async () => {
@@ -27,13 +36,52 @@ export default function DiscoveryPage() {
     void loadAll();
   }, []);
 
+  const handleProbeLiveRadio = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!probeIp) return;
+    setProbing(true);
+    try {
+      const res = await airManagerApi.probeLiveIp({
+        ip_address: probeIp,
+        username: radioUser || "admin",
+        password: radioPassword,
+        port: radioPort || 80,
+        save_credential: true,
+      });
+      setBanner(res.message);
+      await loadAll();
+    } catch (err) {
+      setBanner(err instanceof Error ? err.message : "Live radio probe failed");
+    } finally {
+      setProbing(false);
+    }
+  };
+
+  const handleSaveCredentialOnly = async () => {
+    if (!radioPassword) {
+      setBanner("Enter the radio web login password first");
+      return;
+    }
+    try {
+      await airManagerApi.createCredential({
+        name: "WISP-Standard-airOS8",
+        username: radioUser || "admin",
+        password: radioPassword,
+        https_port: radioPort || 80,
+        is_default: true,
+      });
+      setBanner(`Saved default airOS 8 web login (${radioUser || "admin"} on port ${radioPort})`);
+      await loadAll();
+    } catch (err) {
+      setBanner(err instanceof Error ? err.message : "Failed to save credential");
+    }
+  };
+
   const handleAddSubnet = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!cidrInput || !subnetNameInput) return;
     try {
       await airManagerApi.createSubnet({ cidr_block: cidrInput, name: subnetNameInput });
-      setCidrInput("");
-      setSubnetNameInput("");
       setBanner(`Added routed subnet ${cidrInput}`);
       await loadAll();
     } catch (err) {
@@ -53,36 +101,120 @@ export default function DiscoveryPage() {
     await loadAll();
   };
 
+  const handleClearDemo = async () => {
+    const res = await airManagerApi.clearDemoDevices();
+    setBanner(res.message);
+    await loadAll();
+  };
+
   return (
     <div className="space-y-8">
-      <div>
-        <h1 className="text-2xl font-bold text-white">
-          Hybrid Multi-Subnet Discovery &amp; Ubiquiti Router Integration
-        </h1>
-        <p className="text-sm text-slate-400">
-          Configured CIDR scanners, EdgeOS/UISP neighbor enrichment, and encrypted airOS 8 credentials
-        </p>
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+        <div>
+          <h1 className="text-2xl font-bold text-white">
+            airOS 8 Web Dashboard Login &amp; Multi-Subnet Discovery
+          </h1>
+          <p className="text-sm text-slate-400">
+            Authenticate as <code className="text-blue-400">admin</code> via HTTP (:80) / HTTPS (:443) to import LiteAP GPS sectors &amp; Loco 5AC clients
+          </p>
+        </div>
+        <button
+          onClick={() => void handleClearDemo()}
+          className="px-3.5 py-2 rounded-lg bg-rose-900/70 hover:bg-rose-800 text-xs font-semibold text-rose-100 self-start"
+        >
+          Clear Demo Radios
+        </button>
       </div>
 
       {banner && (
         <div className="px-4 py-3 rounded-xl bg-blue-950/80 border border-blue-700 text-blue-200 text-sm flex justify-between">
           <span>{banner}</span>
-          <button onClick={() => setBanner(null)} className="text-xs underline">
+          <button onClick={() => setBanner(null)} className="text-xs underline ml-4">
             Dismiss
           </button>
         </div>
       )}
 
-      {/* Configured Subnets */}
+      {/* 1. Live airOS 8 Web Login & Direct Radio Probe */}
+      <div className="bg-slate-900 border border-blue-800/60 rounded-xl p-5 space-y-4">
+        <div>
+          <h2 className="text-base font-semibold text-white">
+            1. airOS 8 Web Login &amp; Live Radio Probe (HTTP Port 80 / HTTPS 443)
+          </h2>
+          <p className="text-xs text-slate-400 mt-0.5">
+            Logs into <code className="text-slate-300">POST /api/auth</code> on the radio web dashboard, saves your default <code className="text-slate-300">admin</code> credentials encrypted in the vault, and pulls <code className="text-slate-300">/status.cgi</code> &amp; <code className="text-slate-300">/sta.cgi</code>.
+          </p>
+        </div>
+
+        <form onSubmit={(e) => void handleProbeLiveRadio(e)} className="grid grid-cols-1 md:grid-cols-5 gap-3">
+          <div>
+            <label className="block text-xs text-slate-400 mb-1">Radio IP Address</label>
+            <input
+              type="text"
+              value={probeIp}
+              onChange={(e) => setProbeIp(e.target.value)}
+              placeholder="10.61.200.185"
+              className="w-full px-3 py-2 rounded-lg bg-slate-950 border border-slate-800 text-sm text-white font-mono"
+            />
+          </div>
+          <div>
+            <label className="block text-xs text-slate-400 mb-1">Web Login Username</label>
+            <input
+              type="text"
+              value={radioUser}
+              onChange={(e) => setRadioUser(e.target.value)}
+              placeholder="admin"
+              className="w-full px-3 py-2 rounded-lg bg-slate-950 border border-slate-800 text-sm text-white font-mono"
+            />
+          </div>
+          <div>
+            <label className="block text-xs text-slate-400 mb-1">Web Login Password</label>
+            <input
+              type="password"
+              value={radioPassword}
+              onChange={(e) => setRadioPassword(e.target.value)}
+              placeholder="Enter admin password..."
+              className="w-full px-3 py-2 rounded-lg bg-slate-950 border border-slate-800 text-sm text-white"
+            />
+          </div>
+          <div>
+            <label className="block text-xs text-slate-400 mb-1">Web Port (80 or 443)</label>
+            <input
+              type="number"
+              value={radioPort}
+              onChange={(e) => setRadioPort(Number(e.target.value))}
+              className="w-full px-3 py-2 rounded-lg bg-slate-950 border border-slate-800 text-sm text-white font-mono"
+            />
+          </div>
+          <div className="flex items-end gap-2">
+            <button
+              type="submit"
+              disabled={probing}
+              className="w-full px-4 py-2 rounded-lg bg-blue-600 hover:bg-blue-500 text-xs font-semibold text-white"
+            >
+              {probing ? "Logging in..." : "Login & Probe Radio"}
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleSaveCredentialOnly()}
+              className="px-3 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-semibold text-slate-200 whitespace-nowrap"
+            >
+              Save Login
+            </button>
+          </div>
+        </form>
+      </div>
+
+      {/* 2. Configured Subnets */}
       <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-4">
-        <h2 className="text-base font-semibold text-white">1. Configured Routed Subnets (CIDR)</h2>
+        <h2 className="text-base font-semibold text-white">2. Configured Routed Subnets (CIDR)</h2>
         <form onSubmit={(e) => void handleAddSubnet(e)} className="flex flex-wrap gap-3">
           <input
             type="text"
             value={cidrInput}
             onChange={(e) => setCidrInput(e.target.value)}
-            placeholder="CIDR (e.g. 10.10.30.0/24)"
-            className="px-3 py-2 rounded-lg bg-slate-950 border border-slate-800 text-sm text-white"
+            placeholder="CIDR (e.g. 10.61.200.0/24)"
+            className="px-3 py-2 rounded-lg bg-slate-950 border border-slate-800 text-sm text-white font-mono"
           />
           <input
             type="text"
@@ -136,10 +268,10 @@ export default function DiscoveryPage() {
         </div>
       </div>
 
-      {/* Ubiquiti Routers */}
+      {/* 3. Ubiquiti Routers */}
       <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-4">
         <h2 className="text-base font-semibold text-white">
-          2. Optional Ubiquiti Router Integration (ARP &amp; DHCP Lease Helpers)
+          3. Optional Ubiquiti Router Integration (ARP &amp; DHCP Lease Helpers)
         </h2>
         <div className="overflow-x-auto">
           <table className="w-full text-left text-sm">
@@ -176,10 +308,10 @@ export default function DiscoveryPage() {
         </div>
       </div>
 
-      {/* Credentials */}
+      {/* 4. Credentials */}
       <div className="bg-slate-900 border border-slate-800 rounded-xl p-5 space-y-3">
         <h2 className="text-base font-semibold text-white">
-          3. Encrypted airOS 8 &amp; Router Credential Profiles (Fernet Vault)
+          4. Encrypted airOS 8 &amp; Router Credential Profiles (Fernet Vault)
         </h2>
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
           {credentials.map((c) => (
@@ -190,7 +322,7 @@ export default function DiscoveryPage() {
               <div>
                 <div className="font-semibold text-sm text-white">{c.name}</div>
                 <div className="text-xs text-slate-400">
-                  User: <span className="font-mono text-slate-200">{c.username}</span> · HTTPS Port:{" "}
+                  User: <span className="font-mono text-slate-200">{c.username}</span> · Web Port:{" "}
                   {c.https_port}
                 </div>
               </div>

@@ -53,7 +53,7 @@ class RoutedSubnetScanner:
         self,
         concurrency: int = 64,
         timeout_sec: float = 1.5,
-        ports: tuple[int, ...] = (443, 80),
+        ports: tuple[int, ...] = (443, 80, 8080, 8443, 22),
         custom_prober: Callable[[str, int, float], asyncio.Future[float | None]] | None = None,
     ) -> None:
         self.concurrency = max(1, concurrency)

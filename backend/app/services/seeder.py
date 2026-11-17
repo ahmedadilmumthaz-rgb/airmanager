@@ -15,12 +15,12 @@ def seed_initial_topology(repo: AirManagerRepository) -> dict[str, Any]:
     if existing_devices:
         return {"seeded": False, "devices_count": len(existing_devices)}
 
-    # 1. Credential profiles
+    # 1. Credential profiles (defaulting to 'admin' via HTTP port 80 for airOS 8 Web Dashboard)
     default_cred = repo.create_credential(
         name="WISP-Standard-airOS8",
-        username="ubnt-admin",
+        username="admin",
         password="airOS8-Sector-Password!",
-        https_port=443,
+        https_port=80,
         is_default=True,
     )
     router_cred = repo.create_credential(

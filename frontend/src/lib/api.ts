@@ -137,6 +137,24 @@ export const airManagerApi = {
 
   listTasks: () => apiRequest<{ items: AgentTaskItem[]; total: number }>("/api/v1/tasks"),
 
+  probeLiveIp: (payload: {
+    ip_address: string;
+    username: string;
+    password?: string;
+    port?: number;
+    save_credential?: boolean;
+  }) =>
+    apiRequest<{ message: string; device: DeviceItem; task: AgentTaskItem }>(
+      "/api/v1/discovery/probe-ip",
+      {
+        method: "POST",
+        body: JSON.stringify(payload),
+      }
+    ),
+
+  clearDemoDevices: () =>
+    apiRequest<{ message: string }>("/api/v1/discovery/clear-devices", { method: "POST" }),
+
   simulateIpDrift: () =>
     apiRequest<{ message: string }>("/api/v1/discovery/simulate-ip-drift", { method: "POST" }),
 };

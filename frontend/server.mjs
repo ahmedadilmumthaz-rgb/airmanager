@@ -120,6 +120,63 @@ const HTML_DOCUMENT = `<!DOCTYPE html>
       render();
     }
 
+    async function probeLiveRadio() {
+      const ip = document.getElementById('probe-ip').value.trim();
+      const user = document.getElementById('probe-user').value.trim() || 'admin';
+      const pass = document.getElementById('probe-pass').value;
+      const port = Number(document.getElementById('probe-port').value || 80);
+      showBanner('Logging into http://' + ip + ':' + port + '/api/auth as ' + user + '...');
+      const res = await fetch('/api/v1/discovery/probe-ip', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ ip_address: ip, username: user, password: pass, port: port, save_credential: true })
+      });
+      const data = await res.json();
+      showBanner(data.message || data.detail || 'Probe completed');
+      render();
+    }
+
+    async function saveDefaultCred() {
+      const user = document.getElementById('probe-user').value.trim() || 'admin';
+      const pass = document.getElementById('probe-pass').value;
+      const port = Number(document.getElementById('probe-port').value || 80);
+      const res = await fetch('/api/v1/credentials', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: 'WISP-Standard-airOS8', username: user, password: pass, https_port: port, is_default: true })
+      });
+      if (res.ok) showBanner('Saved default airOS 8 web login (' + user + ' on port ' + port + ')');
+      render();
+    }
+
+    async function addSubnet() {
+      const cidr = document.getElementById('new-cidr').value.trim();
+      const name = document.getElementById('new-cidr-name').value.trim() || 'Production Radio Subnet';
+      const res = await fetch('/api/v1/subnets', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ cidr_block: cidr, name: name })
+      });
+      const data = await res.json();
+      showBanner(res.ok ? ('Added subnet ' + cidr) : (data.detail || 'Failed'));
+      render();
+    }
+
+    async function scanSubnet(id) {
+      showBanner('Scanning subnet via HTTP/HTTPS...');
+      const res = await fetch('/api/v1/subnets/' + id + '/scan', { method: 'POST' });
+      const data = await res.json();
+      showBanner(data.message || data.detail);
+      render();
+    }
+
+    async function clearDemo() {
+      const res = await fetch('/api/v1/discovery/clear-devices', { method: 'POST' });
+      const data = await res.json();
+      showBanner(data.message);
+      render();
+    }
+
     async function render() {
       const container = document.getElementById('view-container');
       if (currentView === 'clients') {
@@ -169,15 +226,45 @@ const HTML_DOCUMENT = `<!DOCTYPE html>
             s.recent_ip_history.map(h => '<tr><td>' + h.hostname + '</td><td style="font-family:monospace">' + h.mac_address + '</td><td style="font-family:monospace;color:#60a5fa">' + h.ip_address + '</td><td>' + h.discovery_source + '</td></tr>').join('') +
           '</tbody></table></div>';
       } else if (currentView === 'discovery') {
-        const [subRes, rtrRes] = await Promise.all([fetch('/api/v1/subnets'), fetch('/api/v1/routers')]);
+        const [subRes, rtrRes, credRes] = await Promise.all([
+          fetch('/api/v1/subnets'),
+          fetch('/api/v1/routers'),
+          fetch('/api/v1/credentials')
+        ]);
         const subs = await subRes.json();
         const rtrs = await rtrRes.json();
+        const creds = await credRes.json();
         container.innerHTML =
-          '<h1 style="margin-bottom:14px">Routed Subnets &amp; Ubiquiti Router Neighbor Discovery</h1>' +
-          '<div class="card"><h3 style="margin-bottom:10px">Configured CIDR Ranges</h3><table><thead><tr><th>CIDR Block</th><th>Name</th><th>VLAN</th><th>Discovered Radios</th></tr></thead><tbody>' +
-            subs.items.map(s => '<tr><td style="font-family:monospace;color:#60a5fa">' + s.cidr_block + '</td><td>' + s.name + '</td><td>' + (s.vlan_id || '—') + '</td><td>' + s.device_count + '</td></tr>').join('') +
+          '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:14px">' +
+            '<h1>airOS 8 Web Login (admin) &amp; Routed Subnet Discovery</h1>' +
+            '<button class="btn btn-danger" onclick="clearDemo()">Clear Demo Radios</button>' +
+          '</div>' +
+          '<div class="card" style="border-color:#2563eb">' +
+            '<h3 style="margin-bottom:8px">1. Live airOS 8 Web Dashboard Login &amp; Radio Probe (HTTP Port 80)</h3>' +
+            '<p style="font-size:12px;color:#94a3b8;margin-bottom:12px">Authenticates via <code>POST /api/auth</code> using username <code>admin</code>, saves the encrypted credential profile, and imports <code>/status.cgi</code> &amp; <code>/sta.cgi</code>.</p>' +
+            '<div class="toolbar">' +
+              '<input id="probe-ip" value="10.61.200.185" placeholder="Radio IP (e.g. 10.61.200.185)" />' +
+              '<input id="probe-user" value="admin" placeholder="Username (admin)" style="width:120px" />' +
+              '<input id="probe-pass" type="password" placeholder="Web Login Password..." />' +
+              '<input id="probe-port" type="number" value="80" style="width:85px" />' +
+              '<button class="btn btn-primary" onclick="probeLiveRadio()">Login &amp; Probe Radio</button>' +
+              '<button class="btn" onclick="saveDefaultCred()">Save Default Login</button>' +
+            '</div>' +
+          '</div>' +
+          '<div class="card">' +
+            '<h3 style="margin-bottom:10px">2. Configured Routed Subnets (CIDR)</h3>' +
+            '<div class="toolbar">' +
+              '<input id="new-cidr" value="10.61.200.0/24" placeholder="10.61.200.0/24" />' +
+              '<input id="new-cidr-name" value="Production airOS 8 Subnet" placeholder="Subnet Name" style="width:240px" />' +
+              '<button class="btn btn-primary" onclick="addSubnet()">+ Add Routed CIDR</button>' +
+            '</div>' +
+            '<table><thead><tr><th>CIDR Block</th><th>Name</th><th>VLAN</th><th>Discovered Radios</th><th>Action</th></tr></thead><tbody>' +
+            subs.items.map(s => '<tr><td style="font-family:monospace;color:#60a5fa">' + s.cidr_block + '</td><td>' + s.name + '</td><td>' + (s.vlan_id || '—') + '</td><td>' + s.device_count + '</td><td><button class="btn btn-primary" onclick="scanSubnet(\\'' + s.id + '\\')">Scan Subnet Now</button></td></tr>').join('') +
           '</tbody></table></div>' +
-          '<div class="card"><h3 style="margin-bottom:10px">Ubiquiti Routers (ARP / DHCP Enrichment)</h3><table><thead><tr><th>Router Name</th><th>Host IP</th><th>Platform</th><th>Neighbors</th><th>Status</th></tr></thead><tbody>' +
+          '<div class="card"><h3 style="margin-bottom:10px">3. Saved Credential Profiles (Encrypted Vault)</h3><table><thead><tr><th>Profile Name</th><th>Web Username</th><th>Port</th><th>Status</th></tr></thead><tbody>' +
+            creds.items.map(c => '<tr><td>' + c.name + '</td><td style="font-family:monospace">' + c.username + '</td><td>' + c.https_port + '</td><td>' + (c.is_default ? '<span class="badge good">Default</span>' : '') + '</td></tr>').join('') +
+          '</tbody></table></div>' +
+          '<div class="card"><h3 style="margin-bottom:10px">4. Ubiquiti Routers (ARP / DHCP Enrichment)</h3><table><thead><tr><th>Router Name</th><th>Host IP</th><th>Platform</th><th>Neighbors</th><th>Status</th></tr></thead><tbody>' +
             rtrs.items.map(r => '<tr><td>' + r.name + '</td><td style="font-family:monospace">' + r.host_ip + '</td><td>' + r.router_type.toUpperCase() + '</td><td>' + r.neighbors_found + '</td><td>' + r.last_sync_status + '</td></tr>').join('') +
           '</tbody></table></div>';
       } else {

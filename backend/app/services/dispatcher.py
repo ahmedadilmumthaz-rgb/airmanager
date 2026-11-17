@@ -5,13 +5,28 @@ Unified REST API & Agent Protocol Dispatcher for AirManager.
 Used by both the FastAPI application (`app/main.py`) and the zero-dependency HTTP server / test harness.
 """
 
+import asyncio
+import os
+import sys
 from typing import Any
 from urllib.parse import parse_qs, urlparse
+
+# Ensure agent package is importable for live web-triggered radio probing & CIDR scanning
+_AGENT_PATH = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", "..", "agent"))
+if _AGENT_PATH not in sys.path and os.path.isdir(_AGENT_PATH):
+    sys.path.insert(0, _AGENT_PATH)
 
 from app.core.config import settings
 from app.core.security import create_access_token, verify_agent_token
 from app.db.repository import AirManagerRepository, utc_now_iso
 from app.services.seeder import seed_initial_topology
+
+try:
+    from airmanager_agent.airos.client import AirOS8Client
+    from airmanager_agent.scanner.cidr_scanner import RoutedSubnetScanner
+except ImportError:
+    AirOS8Client = None  # type: ignore
+    RoutedSubnetScanner = None  # type: ignore
 
 
 class APIError(Exception):
@@ -198,22 +213,63 @@ class AirManagerDispatcher:
                         raise APIError(404, "Subnet not found")
                     sub = subs[0]
                     now = utc_now_iso()
+
+                    # Attempt live TCP scan & airOS 8 HTTP/HTTPS probing if scanner is available
+                    live_discovered = 0
+                    open_hosts_count = 0
+                    default_cred = self.repo.get_default_credential()
+                    u_name = (default_cred or {}).get("username", "admin")
+                    u_pass = (default_cred or {}).get("password", "")
+                    u_port = int((default_cred or {}).get("https_port", 80))
+
+                    if RoutedSubnetScanner is not None and AirOS8Client is not None and u_pass:
+                        try:
+                            scanner = RoutedSubnetScanner(concurrency=64, timeout_sec=1.2, ports=(80, 443))
+                            open_hosts = asyncio.run(scanner.scan_cidr(sub["cidr_block"]))
+                            open_hosts_count = len(open_hosts)
+                            for h in open_hosts:
+                                try:
+                                    client = AirOS8Client(
+                                        host_ip=h.ip_address,
+                                        username=u_name,
+                                        password=u_pass,
+                                        https_port=h.open_port or u_port,
+                                        timeout_sec=4.0,
+                                    )
+                                    dev_payload = client.probe_full_device()
+                                    dev_payload["discovery_source"] = "subnet_scan"
+                                    self.repo.upsert_discovered_device(dev_payload)
+                                    live_discovered += 1
+                                except Exception:
+                                    continue
+                        except Exception:
+                            pass
+
                     devs = self.repo.list_devices(subnet_id=sub_id)
+                    total_in_sub = max(live_discovered, len(devs))
                     self.repo._execute(
                         "UPDATE subnets SET last_scanned_at = ?, last_discovered_count = ? WHERE id = ?",
-                        (now, len(devs), sub_id),
+                        (now, total_in_sub, sub_id),
                     )
                     task = self.repo.create_task(
                         task_type="scan_subnet",
-                        payload={"subnet_id": sub_id, "cidr_block": sub["cidr_block"], "name": sub["name"]},
+                        payload={
+                            "subnet_id": sub_id,
+                            "cidr_block": sub["cidr_block"],
+                            "name": sub["name"],
+                            "username": u_name,
+                        },
                         auto_complete_result={
                             "cidr_block": sub["cidr_block"],
-                            "hosts_probed": 254,
-                            "airos_devices_found": len(devs),
+                            "open_web_hosts": open_hosts_count,
+                            "airos_devices_found": total_in_sub,
                             "scanned_at": now,
                         },
                     )
-                    return 200, {"message": f"Routed subnet scan completed on {sub['cidr_block']}", "task": task}
+                    return 200, {
+                        "message": f"Scanned {sub['cidr_block']} (login: {u_name}) — {total_in_sub} radios in subnet",
+                        "task": task,
+                    }
 
             # Ubiquiti Routers
             if path == "/api/v1/routers":
@@ -289,6 +345,68 @@ class AirManagerDispatcher:
                     limit=int(query.get("limit", 50)),
                 )
                 return 200, {"items": tasks, "total": len(tasks)}
+
+            # Live Single-IP Radio Probe via Web Dashboard Login (`admin` + password over HTTP :80 / HTTPS :443)
+            if method == "POST" and path == "/api/v1/discovery/probe-ip":
+                ip_addr = str(payload.get("ip_address") or "").strip()
+                if not ip_addr:
+                    raise APIError(400, "ip_address is required")
+
+                default_cred = self.repo.get_default_credential() or {}
+                username = str(payload.get("username") or default_cred.get("username") or "admin").strip()
+                password = str(payload.get("password") or default_cred.get("password") or "")
+                port = int(payload.get("port") or default_cred.get("https_port") or 80)
+
+                if payload.get("save_credential", True) and payload.get("password"):
+                    self.repo.create_credential(
+                        name=str(payload.get("credential_name") or "WISP-Standard-airOS8"),
+                        username=username,
+                        password=password,
+                        https_port=port,
+                        is_default=True,
+                    )
+
+                if AirOS8Client is None:
+                    raise APIError(500, "AirOS8Client module unavailable")
+
+                try:
+                    client = AirOS8Client(
+                        host_ip=ip_addr,
+                        username=username,
+                        password=password,
+                        https_port=port,
+                        timeout_sec=6.0,
+                    )
+                    dev_payload = client.probe_full_device()
+                    dev_payload["discovery_source"] = "manual"
+                    reconciled = self.repo.upsert_discovered_device(dev_payload)
+                    clients_count = len(dev_payload.get("clients") or [])
+                    task = self.repo.create_task(
+                        task_type="probe_device",
+                        target_device_id=reconciled["device_id"],
+                        payload={"ip_address": ip_addr, "username": username, "port": port},
+                        auto_complete_result={
+                            "hostname": dev_payload.get("hostname"),
+                            "model": dev_payload.get("model"),
+                            "mac_address": reconciled["mac_address"],
+                            "connected_clients": clients_count,
+                        },
+                    )
+                    return 200, {
+                        "message": f"Authenticated as '{username}' on {ip_addr}:{port} — Imported {dev_payload.get('hostname')} ({dev_payload.get('model')}, {clients_count} clients)",
+                        "device": self.repo.get_device_detail(reconciled["device_id"]),
+                        "task": task,
+                    }
+                except Exception as exc:
+                    raise APIError(
+                        502,
+                        f"Could not authenticate/poll airOS 8 radio at {ip_addr}:{port} as '{username}': {exc}",
+                    ) from exc
+
+            # Clear demo/seeded devices so operator only sees real discovered radios
+            if method == "POST" and path == "/api/v1/discovery/clear-devices":
+                removed = self.repo.clear_all_devices()
+                return 200, {"message": f"Cleared {removed} devices from inventory. Ready for live discovery."}
 
             # Simulator helper endpoint: Simulate IP Drift across DHCP/Subnets
             if method == "POST" and path == "/api/v1/discovery/simulate-ip-drift":

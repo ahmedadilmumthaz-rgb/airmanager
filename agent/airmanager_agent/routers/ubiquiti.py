@@ -33,6 +33,8 @@ class RouterNeighborEntry:
 
 # Ubiquiti OUI prefixes commonly found on LiteAP GPS & NanoStation Loco 5AC
 UBIQUITI_OUIS = (
+    "E0:63:DA",
+    "18:E8:29",
     "78:8A:20",
     "FC:EC:DA",
     "80:2A:A8",
@@ -41,6 +43,14 @@ UBIQUITI_OUIS = (
     "24:5A:4C",
     "B4:FB:E4",
     "04:18:D6",
+    "74:83:C2",
+    "24:A4:3C",
+    "DC:9F:DB",
+    "AC:8B:A9",
+    "E4:38:83",
+    "70:A7:41",
+    "D0:21:F9",
+    "F4:92:BF",
 )
 
 
@@ -154,6 +164,10 @@ class EdgeOSRouterClient:
             "BatchMode=yes",
             "-o",
             "StrictHostKeyChecking=accept-new",
+            "-o",
+            "HostKeyAlgorithms=+ssh-rsa",
+            "-o",
+            "PubkeyAcceptedAlgorithms=+ssh-rsa",
             "-o",
             f"ConnectTimeout={int(self.timeout_sec)}",
             "-p",

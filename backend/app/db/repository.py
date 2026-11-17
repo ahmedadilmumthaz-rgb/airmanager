@@ -275,32 +275,68 @@ class AirManagerRepository:
     def create_credential(
         self,
         name: str,
-        username: str,
-        password: str,
-        https_port: int = 443,
-        is_default: bool = False,
+        username: str = "admin",
+        password: str = "",
+        https_port: int = 80,
+        is_default: bool = True,
     ) -> dict[str, Any]:
-        cred_id = str(uuid.uuid4())
         now = utc_now_iso()
         encrypted = encrypt_secret(password)
         if is_default:
             self._execute("UPDATE credential_profiles SET is_default = 0")
-        self._execute(
-            """
-            INSERT INTO credential_profiles (id, name, username, encrypted_password, https_port, is_default, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-            """,
-            (cred_id, name.strip(), username.strip(), encrypted, int(https_port), 1 if is_default else 0, now, now),
-        )
+
+        existing = self._fetch_one("SELECT id, created_at FROM credential_profiles WHERE name = ?", (name.strip(),))
+        if existing:
+            cred_id = existing["id"]
+            self._execute(
+                """
+                UPDATE credential_profiles SET
+                    username = ?,
+                    encrypted_password = ?,
+                    https_port = ?,
+                    is_default = ?,
+                    updated_at = ?
+                WHERE id = ?
+                """,
+                (username.strip(), encrypted, int(https_port), 1 if is_default else 0, now, cred_id),
+            )
+            created_at = str(existing["created_at"])
+        else:
+            cred_id = str(uuid.uuid4())
+            created_at = now
+            self._execute(
+                """
+                INSERT INTO credential_profiles (id, name, username, encrypted_password, https_port, is_default, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (cred_id, name.strip(), username.strip(), encrypted, int(https_port), 1 if is_default else 0, now, now),
+            )
         return {
             "id": cred_id,
             "name": name.strip(),
             "username": username.strip(),
             "https_port": int(https_port),
             "is_default": bool(is_default),
-            "created_at": now,
+            "created_at": created_at,
             "updated_at": now,
         }
+
+    def get_default_credential(self) -> dict[str, Any] | None:
+        creds = self.list_credentials(include_secret=True)
+        if not creds:
+            return None
+        for c in creds:
+            if c.get("is_default"):
+                return c
+        return creds[0]
+
+    def clear_all_devices(self) -> int:
+        count = len(self.list_devices())
+        self._execute("DELETE FROM wireless_clients")
+        self._execute("DELETE FROM device_ip_history")
+        self._execute("DELETE FROM device_metrics")
+        self._execute("DELETE FROM devices")
+        return count
 
     def delete_credential(self, cred_id: str) -> bool:
         existing = self._fetch_one("SELECT id FROM credential_profiles WHERE id = ?", (cred_id,))
@@ -575,6 +611,37 @@ class AirManagerRepository:
             "UPDATE wireless_clients SET client_device_id = ?, last_known_ip = ? WHERE client_mac = ?",
             (device_id, ip_addr, mac),
         )
+
+        # If this station reported its parent_ap_mac and station_link (e.g. from /status.cgi or mca-status),
+        # ensure the parent AP exists and upsert this station into wireless_clients so it appears in Connected Clients!
+        parent_ap_mac = data.get("parent_ap_mac")
+        station_link = data.get("station_link")
+        if data.get("role") == "station" and parent_ap_mac and isinstance(station_link, dict):
+            norm_ap_mac = normalize_mac(parent_ap_mac)
+            ap_row = self._fetch_one("SELECT id FROM devices WHERE mac_address = ?", (norm_ap_mac,))
+            if ap_row:
+                ap_id = ap_row["id"]
+            else:
+                ap_ssid = data.get("ssid") or "AIRMAX-SECTOR"
+                ap_created = self.upsert_discovered_device(
+                    {
+                        "mac_address": norm_ap_mac,
+                        "current_ip": "0.0.0.0",
+                        "hostname": f"AP-{ap_ssid}",
+                        "model": "LiteAP GPS",
+                        "product_code": "LAP-GPS",
+                        "role": "ap",
+                        "ssid": ap_ssid,
+                        "firmware_version": data.get("firmware_version", "WA.v8.7.9"),
+                        "frequency_mhz": data.get("frequency_mhz", 5665),
+                        "channel_width_mhz": data.get("channel_width_mhz", 20),
+                        "noise_floor_dbm": data.get("noise_floor_dbm", -92),
+                        "status": "online",
+                        "discovery_source": source,
+                    }
+                )
+                ap_id = ap_created["device_id"]
+            self.ingest_ap_clients(ap_id, [station_link])
 
         # Ingest associated clients if provided (for APs)
         clients_list = data.get("clients")
