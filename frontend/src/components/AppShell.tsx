@@ -11,11 +11,11 @@ import {
 } from "@/lib/api";
 
 const NAV_ITEMS = [
-  { href: "/clients", label: "Connected Clients", badge: "Primary" },
-  { href: "/", label: "Overview Dashboard" },
-  { href: "/devices", label: "Sectors & Radios" },
-  { href: "/discovery", label: "Routed Subnets & Routers" },
-  { href: "/tasks", label: "Agent Audit Log" },
+  { href: "/clients", label: "Connected Clients", shortLabel: "Clients", badge: "Primary" },
+  { href: "/", label: "Overview Dashboard", shortLabel: "Overview" },
+  { href: "/devices", label: "Sectors & Radios", shortLabel: "Radios" },
+  { href: "/discovery", label: "Routed Subnets & Routers", shortLabel: "Discovery" },
+  { href: "/tasks", label: "Agent Audit Log", shortLabel: "Audit" },
 ];
 
 export function AppShell({ children }: { children: React.ReactNode }) {
@@ -23,12 +23,17 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const [authReady, setAuthReady] = useState(false);
   const [isAuthenticated, setIsAuthenticated] = useState(false);
   const [currentUser, setCurrentUser] = useState<string>("admin");
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
   // Login form state
   const [username, setUsername] = useState("admin");
   const [password, setPassword] = useState("");
   const [loginError, setLoginError] = useState<string | null>(null);
   const [signingIn, setSigningIn] = useState(false);
+
+  useEffect(() => {
+    setMobileMenuOpen(false);
+  }, [pathname]);
 
   useEffect(() => {
     const checkSession = async () => {
@@ -79,11 +84,12 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   const handleSignOut = () => {
     clearAuthSession();
     setIsAuthenticated(false);
+    setMobileMenuOpen(false);
   };
 
   if (!authReady) {
     return (
-      <div className="min-h-screen bg-slate-950 text-slate-400 flex items-center justify-center text-sm">
+      <div className="min-h-screen bg-slate-950 text-slate-400 flex items-center justify-center text-sm px-4">
         Verifying AirManager session...
       </div>
     );
@@ -92,9 +98,9 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   if (!isAuthenticated) {
     return (
       <div className="min-h-screen bg-slate-950 text-slate-100 flex items-center justify-center p-4">
-        <div className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-2xl p-8 shadow-2xl space-y-6">
+        <div className="w-full max-w-md bg-slate-900 border border-slate-800 rounded-2xl p-6 sm:p-8 shadow-2xl space-y-6">
           <div className="flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-blue-600 flex items-center justify-center font-bold text-lg text-white">
+            <div className="w-10 h-10 rounded-xl bg-blue-600 flex items-center justify-center font-bold text-lg text-white shrink-0">
               U
             </div>
             <div>
@@ -144,7 +150,7 @@ export function AppShell({ children }: { children: React.ReactNode }) {
             <button
               type="submit"
               disabled={signingIn}
-              className="w-full py-2.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-sm font-semibold text-white transition"
+              className="w-full py-3 rounded-lg bg-blue-600 hover:bg-blue-500 active:bg-blue-700 text-sm font-semibold text-white transition"
             >
               {signingIn ? "Signing in..." : "Sign In to Dashboard"}
             </button>
@@ -160,8 +166,80 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   }
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 flex">
-      <aside className="w-64 bg-slate-900 border-r border-slate-800 flex flex-col justify-between shrink-0">
+    <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col md:flex-row">
+      {/* Mobile Sticky Top Header */}
+      <header className="md:hidden sticky top-0 z-40 bg-slate-900/95 backdrop-blur border-b border-slate-800 px-4 py-3 flex items-center justify-between">
+        <div className="flex items-center gap-2.5">
+          <div className="w-7 h-7 rounded-lg bg-blue-600 flex items-center justify-center font-bold text-xs text-white">
+            U
+          </div>
+          <div>
+            <div className="font-semibold text-sm text-white leading-tight">AirManager</div>
+            <div className="text-[11px] text-emerald-400 flex items-center gap-1">
+              <span className="w-1.5 h-1.5 rounded-full bg-emerald-400" />
+              airOS 8 · {currentUser}
+            </div>
+          </div>
+        </div>
+
+        <button
+          onClick={() => setMobileMenuOpen((prev) => !prev)}
+          aria-label="Toggle Menu"
+          className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs font-medium text-slate-200 border border-slate-700"
+        >
+          {mobileMenuOpen ? "✕ Close" : "☰ Menu"}
+        </button>
+      </header>
+
+      {/* Mobile Slide-Down Drawer */}
+      {mobileMenuOpen && (
+        <div className="md:hidden fixed inset-0 top-[53px] z-50 bg-black/75 backdrop-blur-xs">
+          <div className="bg-slate-900 border-b border-slate-800 p-4 space-y-3 shadow-2xl">
+            <nav className="space-y-1.5">
+              {NAV_ITEMS.map((item) => {
+                const active =
+                  item.href === "/"
+                    ? pathname === "/"
+                    : pathname?.startsWith(item.href);
+                return (
+                  <Link
+                    key={item.href}
+                    href={item.href}
+                    onClick={() => setMobileMenuOpen(false)}
+                    className={`flex items-center justify-between px-3.5 py-2.5 rounded-lg text-sm font-medium ${
+                      active
+                        ? "bg-blue-600 text-white"
+                        : "text-slate-200 bg-slate-950/60 hover:bg-slate-800"
+                    }`}
+                  >
+                    <span>{item.label}</span>
+                    {item.badge && (
+                      <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-blue-300 font-semibold">
+                        {item.badge}
+                      </span>
+                    )}
+                  </Link>
+                );
+              })}
+            </nav>
+
+            <div className="pt-3 border-t border-slate-800 flex items-center justify-between text-xs">
+              <span className="text-slate-400">
+                Signed in as <strong className="text-white">{currentUser}</strong>
+              </span>
+              <button
+                onClick={handleSignOut}
+                className="px-3 py-1.5 rounded-lg bg-rose-900/80 text-rose-100 font-medium"
+              >
+                Sign Out
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Desktop Sidebar */}
+      <aside className="hidden md:flex w-64 bg-slate-900 border-r border-slate-800 flex-col justify-between shrink-0">
         <div>
           <div className="p-5 border-b border-slate-800">
             <div className="flex items-center gap-2.5">
@@ -228,7 +306,31 @@ export function AppShell({ children }: { children: React.ReactNode }) {
         </div>
       </aside>
 
-      <main className="flex-1 min-w-0 overflow-y-auto p-6 lg:p-8">{children}</main>
+      {/* Main Content Area */}
+      <main className="flex-1 min-w-0 overflow-y-auto p-3.5 pb-24 sm:p-6 md:pb-8 lg:p-8">
+        {children}
+      </main>
+
+      {/* Mobile Bottom Navigation Bar */}
+      <nav className="md:hidden fixed bottom-0 inset-x-0 z-40 bg-slate-900/95 backdrop-blur border-t border-slate-800 grid grid-cols-5">
+        {NAV_ITEMS.map((item) => {
+          const active =
+            item.href === "/"
+              ? pathname === "/"
+              : pathname?.startsWith(item.href);
+          return (
+            <Link
+              key={item.href}
+              href={item.href}
+              className={`py-2.5 px-1 flex flex-col items-center justify-center text-[11px] font-medium transition ${
+                active ? "text-blue-400 bg-slate-800/60" : "text-slate-400"
+              }`}
+            >
+              <span className="truncate">{item.shortLabel}</span>
+            </Link>
+          );
+        })}
+      </nav>
     </div>
   );
 }
