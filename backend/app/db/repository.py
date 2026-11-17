@@ -228,7 +228,14 @@ class AirManagerRepository:
                 with psycopg2.connect(self.pg_dsn) as conn:
                     with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
                         cur.execute(pg_query, params)
-                        return [dict(r) for r in cur.fetchall()]
+                        rows = []
+                        for r in cur.fetchall():
+                            row_dict = dict(r)
+                            for k, v in row_dict.items():
+                                if isinstance(v, datetime):
+                                    row_dict[k] = v.isoformat()
+                            rows.append(row_dict)
+                        return rows
             conn = self._get_sqlite_conn()
             cur = conn.execute(query, params)
             return [dict(r) for r in cur.fetchall()]
@@ -623,12 +630,15 @@ class AirManagerRepository:
                 ap_id = ap_row["id"]
             else:
                 ap_ssid = data.get("ssid") or "AIRMAX-SECTOR"
+                ap_ip = data.get("parent_ap_ip") or "0.0.0.0"
+                ap_host = data.get("parent_ap_hostname") or f"AP-{ap_ssid}"
+                ap_model = data.get("parent_ap_model") or "LiteAP GPS"
                 ap_created = self.upsert_discovered_device(
                     {
                         "mac_address": norm_ap_mac,
-                        "current_ip": "0.0.0.0",
-                        "hostname": f"AP-{ap_ssid}",
-                        "model": "LiteAP GPS",
+                        "current_ip": ap_ip,
+                        "hostname": ap_host,
+                        "model": ap_model,
                         "product_code": "LAP-GPS",
                         "role": "ap",
                         "ssid": ap_ssid,

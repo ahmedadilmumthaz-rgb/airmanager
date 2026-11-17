@@ -9,6 +9,7 @@ Or run directly with standard library HTTP server for local dev:
 """
 
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+import asyncio
 import json
 import os
 import sys
@@ -23,6 +24,7 @@ dispatcher = AirManagerDispatcher()
 
 try:
     from fastapi import FastAPI, Header, HTTPException, Request
+    from fastapi.encoders import jsonable_encoder
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import JSONResponse, StreamingResponse
 
@@ -62,13 +64,14 @@ try:
         if request.url.query:
             path_with_query = f"{path_with_query}?{request.url.query}"
 
-        status_code, response_data = dispatcher.handle_request(
-            method=request.method,
-            path_with_query=path_with_query,
-            body=body_json,
-            headers=dict(request.headers),
+        status_code, response_data = await asyncio.to_thread(
+            dispatcher.handle_request,
+            request.method,
+            path_with_query,
+            body_json,
+            dict(request.headers),
         )
-        return JSONResponse(status_code=status_code, content=response_data)
+        return JSONResponse(status_code=status_code, content=jsonable_encoder(response_data))
 
 except ImportError:
     app = None  # type: ignore

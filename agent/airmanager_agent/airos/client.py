@@ -13,8 +13,12 @@ Supports LiteAP GPS (AP mode) and NanoStation Loco 5AC (Station mode) running ai
 
 from http.cookiejar import CookieJar
 import json
+import os
+import pty
 import re
+import select
 import ssl
+import subprocess
 import time
 from typing import Any
 from urllib import parse, request
@@ -387,6 +391,103 @@ def parse_mca_status_output(ip_address: str, mca_text: str) -> dict[str, Any]:
     return result
 
 
+def run_airos_ssh_with_password(
+    host_ip: str,
+    username: str,
+    password: str,
+    remote_cmd: str,
+    ssh_port: int = 22,
+    timeout_sec: float = 10.0,
+) -> str:
+    """
+    Executes a command on an airOS 8 radio over SSH using Python's built-in `pty` module
+    to supply the password from the Web Dashboard Credential Vault (no `sshpass` needed).
+    Automatically enables `+ssh-rsa` for airOS 8 Dropbear compatibility.
+    """
+    master_fd, slave_fd = pty.openpty()
+    cmd = [
+        "ssh",
+        "-p",
+        str(ssh_port),
+        "-o",
+        "StrictHostKeyChecking=no",
+        "-o",
+        "UserKnownHostsFile=/dev/null",
+        "-o",
+        "LogLevel=ERROR",
+        "-o",
+        "HostKeyAlgorithms=+ssh-rsa",
+        "-o",
+        "PubkeyAcceptedAlgorithms=+ssh-rsa",
+        "-o",
+        "KexAlgorithms=+diffie-hellman-group14-sha1,diffie-hellman-group1-sha1",
+        "-o",
+        "PreferredAuthentications=password,keyboard-interactive",
+        "-o",
+        f"ConnectTimeout={max(3, int(timeout_sec))}",
+        f"{username}@{host_ip}",
+        remote_cmd,
+    ]
+
+    proc = subprocess.Popen(
+        cmd,
+        stdin=slave_fd,
+        stdout=slave_fd,
+        stderr=slave_fd,
+        close_fds=True,
+        start_new_session=True,
+    )
+    os.close(slave_fd)
+
+    output_chunks: list[bytes] = []
+    password_sent = False
+    deadline = time.monotonic() + timeout_sec
+
+    try:
+        while time.monotonic() < deadline:
+            rlist, _, _ = select.select([master_fd], [], [], 0.25)
+            if master_fd in rlist:
+                try:
+                    chunk = os.read(master_fd, 4096)
+                except OSError:
+                    break
+                if not chunk:
+                    break
+                output_chunks.append(chunk)
+                combined = b"".join(output_chunks)
+                if not password_sent and b"password:" in combined.lower():
+                    os.write(master_fd, (password + "\n").encode("utf-8"))
+                    password_sent = True
+                    output_chunks.clear()
+                elif password_sent and b"permission denied" in combined.lower():
+                    raise RuntimeError(f"Authentication failed for '{username}@{host_ip}' (Permission denied)")
+            elif proc.poll() is not None:
+                break
+    finally:
+        try:
+            os.close(master_fd)
+        except OSError:
+            pass
+        if proc.poll() is None:
+            proc.terminate()
+            try:
+                proc.wait(timeout=1.0)
+            except Exception:
+                proc.kill()
+
+    raw_text = b"".join(output_chunks).decode("utf-8", errors="replace")
+    # Strip leading newline echo after password submission
+    cleaned_lines = [
+        line
+        for line in raw_text.splitlines()
+        if not line.strip().lower().endswith("password:")
+    ]
+    result_text = "\n".join(cleaned_lines).strip()
+    if not result_text and proc.returncode not in (0, None):
+        raise RuntimeError(f"SSH connection to {host_ip}:{ssh_port} failed (exit {proc.returncode})")
+    return result_text
+
+
 class AirOS8Client:
     """
     HTTP/HTTPS & SSH Session Client for Ubiquiti airOS 8 radios (`LiteAP GPS` & `Loco 5AC`).
@@ -498,20 +599,59 @@ class AirOS8Client:
                 self.csrf_token = str(tok)
         return bool(resp is not None)
 
-    def probe_full_device(
-        self, previous_counters: dict[str, tuple[float, int, int]] | None = None
+    def probe_via_ssh(
+        self,
+        ssh_port: int = 22,
+        previous_counters: dict[str, tuple[float, int, int]] | None = None,
     ) -> dict[str, Any]:
         """
-        Logs into the airOS 8 web interface, fetches `/status.cgi`, and fetches `/sta.cgi`
-        if the radio is an Access Point (`LiteAP GPS`).
+        Probes an airOS 8 radio (`WA.v8.7.x`) via SSH (`mca-status` + `wstalist`) using
+        the `username` (`admin`) and `password` entered in the Web Dashboard.
         """
-        self.login()
-        status_dict = self.fetch_status()
-        if status_dict.get("role") == "ap" and "clients" not in status_dict:
-            try:
-                status_dict["clients"] = self.fetch_stations(previous_counters=previous_counters)
-            except Exception:
-                status_dict.setdefault("clients", [])
+        combined_out = run_airos_ssh_with_password(
+            host_ip=self.host_ip,
+            username=self.username,
+            password=self.password,
+            remote_cmd='mca-status; echo "===AIRMANAGER_WSTALIST==="; wstalist',
+            ssh_port=ssh_port,
+            timeout_sec=max(8.0, self.timeout_sec),
+        )
+        parts = combined_out.split("===AIRMANAGER_WSTALIST===", 1)
+        mca_part = parts[0].strip()
+        wsta_part = parts[1].strip() if len(parts) > 1 else ""
+
+        if "deviceId=" not in mca_part and "apMac=" not in mca_part and "platform=" not in mca_part:
+            raise RuntimeError(f"Unexpected mca-status output from {self.host_ip}: {mca_part[:160]}")
+
+        status_dict = parse_mca_status_output(self.host_ip, mca_part)
+
+        # Parse wstalist JSON if present
+        if wsta_part:
+            json_start = wsta_part.find("[")
+            json_end = wsta_part.rfind("]")
+            if json_start != -1 and json_end != -1 and json_end >= json_start:
+                try:
+                    wsta_list = json.loads(wsta_part[json_start : json_end + 1])
+                    if isinstance(wsta_list, list) and wsta_list:
+                        if status_dict.get("role") == "ap":
+                            status_dict["clients"] = parse_airos_sta_json(
+                                wsta_list, previous_counters=previous_counters
+                            )
+                        elif status_dict.get("role") == "station":
+                            ap_entry = wsta_list[0]
+                            ap_remote = ap_entry.get("remote", {}) or {}
+                            if ap_remote.get("hostname"):
+                                status_dict["parent_ap_hostname"] = str(ap_remote["hostname"])
+                            if ap_remote.get("ipaddr") or ap_entry.get("lastip"):
+                                status_dict["parent_ap_ip"] = str(
+                                    ap_remote.get("ipaddr") or ap_entry.get("lastip")
+                                )
+                            if ap_remote.get("platform"):
+                                ap_model, _ = classify_airos_model(str(ap_remote["platform"]))
+                                status_dict["parent_ap_model"] = ap_model
+                except Exception:
+                    pass
+
         if status_dict.get("clients"):
             status_dict["tx_throughput_kbps"] = sum(
                 float(c.get("tx_throughput_kbps") or 0.0) for c in status_dict["clients"]
@@ -520,6 +660,42 @@ class AirOS8Client:
                 float(c.get("rx_throughput_kbps") or 0.0) for c in status_dict["clients"]
             )
         return status_dict
+
+    def probe_full_device(
+        self, previous_counters: dict[str, tuple[float, int, int]] | None = None
+    ) -> dict[str, Any]:
+        """
+        Probes an airOS 8 radio using the credentials from the Web Dashboard.
+        Tries SSH (`mca-status` + `wstalist` on port 22) first for 100% compatibility with
+        airOS 8.7.x (`WA.ar934x.v8.7.9`), and falls back to HTTP/HTTPS (`/api/auth` + `/status.cgi`) if SSH is closed.
+        """
+        ssh_error: Exception | None = None
+        if self.password:
+            try:
+                return self.probe_via_ssh(ssh_port=22, previous_counters=previous_counters)
+            except Exception as exc:
+                ssh_error = exc
+
+        try:
+            self.login()
+            status_dict = self.fetch_status()
+            if status_dict.get("role") == "ap" and "clients" not in status_dict:
+                try:
+                    status_dict["clients"] = self.fetch_stations(previous_counters=previous_counters)
+                except Exception:
+                    status_dict.setdefault("clients", [])
+            if status_dict.get("clients"):
+                status_dict["tx_throughput_kbps"] = sum(
+                    float(c.get("tx_throughput_kbps") or 0.0) for c in status_dict["clients"]
+                )
+                status_dict["rx_throughput_kbps"] = sum(
+                    float(c.get("rx_throughput_kbps") or 0.0) for c in status_dict["clients"]
+                )
+            return status_dict
+        except Exception as http_exc:
+            if ssh_error is not None:
+                raise RuntimeError(f"SSH probe error: {ssh_error}; HTTP probe error: {http_exc}") from http_exc
+            raise
 
     def fetch_status(self) -> dict[str, Any]:
         raw = self._request_json("GET", "/status.cgi")

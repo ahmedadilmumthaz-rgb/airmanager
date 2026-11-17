@@ -399,8 +399,8 @@ class AirManagerDispatcher:
                     }
                 except Exception as exc:
                     raise APIError(
-                        502,
-                        f"Could not authenticate/poll airOS 8 radio at {ip_addr}:{port} as '{username}': {exc}",
+                        400,
+                        f"Could not authenticate/poll airOS 8 radio at {ip_addr} as '{username}': {exc}",
                     ) from exc
 
             # Clear demo/seeded devices so operator only sees real discovered radios
