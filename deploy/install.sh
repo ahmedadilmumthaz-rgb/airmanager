@@ -24,6 +24,10 @@ sudo -u postgres psql -tc "SELECT 1 FROM pg_roles WHERE rolname='airmanager'" | 
 sudo -u postgres psql -tc "SELECT 1 FROM pg_database WHERE datname='airmanager'" | grep -q 1 || \
     sudo -u postgres psql -c "CREATE DATABASE airmanager OWNER airmanager;"
 sudo -u postgres psql -d airmanager -f "${INSTALL_DIR}/deploy/sql/001_initial_schema.sql"
+sudo -u postgres psql -d airmanager -c "ALTER SCHEMA public OWNER TO airmanager; GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO airmanager; GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO airmanager; ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON TABLES TO airmanager; ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO airmanager;"
+for tbl in credential_profiles subnets routers devices device_ip_history wireless_clients device_metrics agent_tasks; do
+    sudo -u postgres psql -d airmanager -c "ALTER TABLE IF EXISTS ${tbl} OWNER TO airmanager;"
+done
 
 echo "=== [4/7] Generating /etc/airmanager/airmanager.env ==="
 if [ ! -f "${ENV_DIR}/airmanager.env" ]; then

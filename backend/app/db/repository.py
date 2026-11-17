@@ -213,8 +213,11 @@ class AirManagerRepository:
                 )
                 with psycopg2.connect(self.pg_dsn) as conn:
                     with conn.cursor() as cur:
-                        with open(sql_path, "r", encoding="utf-8") as f:
-                            cur.execute(f.read())
+                        cur.execute("SELECT to_regclass('public.devices');")
+                        row = cur.fetchone()
+                        if not row or row[0] is None:
+                            with open(sql_path, "r", encoding="utf-8") as f:
+                                cur.execute(f.read())
                     conn.commit()
             else:
                 conn = self._get_sqlite_conn()

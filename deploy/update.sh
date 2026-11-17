@@ -26,7 +26,14 @@ sudo rsync -a --delete \
 
 sudo cp -R deploy "${INSTALL_DIR}/"
 
-echo "=== [2/4] Updating systemd unit files (ports 8001 & 3002) ==="
+echo "=== [2/4] Fixing PostgreSQL table ownership & updating systemd unit files (ports 8001 & 3002) ==="
+sudo -u postgres psql -d airmanager -c "ALTER SCHEMA public OWNER TO airmanager; GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO airmanager; GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO airmanager;"
+for tbl in credential_profiles subnets routers devices device_ip_history wireless_clients device_metrics agent_tasks; do
+    sudo -u postgres psql -d airmanager -c "ALTER TABLE IF EXISTS ${tbl} OWNER TO airmanager;"
+done
+for seq in device_ip_history_id_seq device_metrics_id_seq; do
+    sudo -u postgres psql -d airmanager -c "ALTER SEQUENCE IF EXISTS ${seq} OWNER TO airmanager;"
+done
 sudo cp "${INSTALL_DIR}/deploy/systemd/"*.service /etc/systemd/system/
 sudo systemctl daemon-reload
 
