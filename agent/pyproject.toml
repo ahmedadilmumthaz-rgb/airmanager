@@ -1,0 +1,16 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "airmanager-agent"
+version = "1.0.0"
+description = "AirManager Linux Multi-Subnet Network Discovery & airOS 8 Management Agent"
+requires-python = ">=3.9"
+dependencies = [
+    "httpx>=0.26.0",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]

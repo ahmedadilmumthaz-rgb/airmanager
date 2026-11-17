@@ -1,0 +1,20 @@
+[Unit]
+Description=AirManager Linux Multi-Subnet Network Discovery & airOS 8 Agent
+After=network-online.target airmanager-api.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=airmanager
+Group=airmanager
+WorkingDirectory=/opt/airmanager/agent
+EnvironmentFile=/etc/airmanager/airmanager.env
+ExecStart=/opt/airmanager/agent/.venv/bin/python -m airmanager_agent.main
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target

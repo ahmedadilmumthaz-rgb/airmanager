@@ -1,0 +1,21 @@
+[Unit]
+Description=AirManager Central FastAPI Backend Service
+After=network-online.target postgresql.service
+Wants=network-online.target
+Requires=postgresql.service
+
+[Service]
+Type=simple
+User=airmanager
+Group=airmanager
+WorkingDirectory=/opt/airmanager/backend
+EnvironmentFile=/etc/airmanager/airmanager.env
+ExecStart=/opt/airmanager/backend/.venv/bin/uvicorn app.main:app --host 127.0.0.1 --port 8000 --workers 2
+Restart=always
+RestartSec=5
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target
