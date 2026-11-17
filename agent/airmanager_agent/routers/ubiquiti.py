@@ -131,3 +131,86 @@ def parse_uisp_arp_payload(items: list[dict[str, Any]], ubiquiti_only: bool = Fa
             )
         )
     return results
+
+
+class EdgeOSRouterClient:
+    """
+    Live SSH transport for Ubiquiti EdgeRouter (EdgeOS) gateways.
+    Harvests `show arp` and `show dhcp leases` across routed VLAN interfaces.
+    """
+
+    def __init__(self, host_ip: str, username: str = "ubnt", port: int = 22, timeout_sec: float = 8.0) -> None:
+        self.host_ip = host_ip
+        self.username = username
+        self.port = port
+        self.timeout_sec = timeout_sec
+
+    async def _run_ssh_command(self, remote_cmd: str) -> str:
+        import asyncio
+
+        proc = await asyncio.create_subprocess_exec(
+            "ssh",
+            "-o",
+            "BatchMode=yes",
+            "-o",
+            "StrictHostKeyChecking=accept-new",
+            "-o",
+            f"ConnectTimeout={int(self.timeout_sec)}",
+            "-p",
+            str(self.port),
+            f"{self.username}@{self.host_ip}",
+            remote_cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=self.timeout_sec + 2.0)
+        if proc.returncode != 0:
+            err_msg = stderr.decode("utf-8", errors="replace").strip()
+            raise RuntimeError(f"EdgeOS SSH command failed ({proc.returncode}): {err_msg}")
+        return stdout.decode("utf-8", errors="replace")
+
+    async def fetch_neighbors(self, ubiquiti_only: bool = True) -> list[RouterNeighborEntry]:
+        arp_out = await self._run_ssh_command("/opt/vyatta/bin/vyatta-op-cmd-wrapper show arp")
+        dhcp_out = await self._run_ssh_command("/opt/vyatta/bin/vyatta-op-cmd-wrapper show dhcp leases")
+        by_mac: dict[str, RouterNeighborEntry] = {}
+        for entry in parse_edgeos_arp_table(arp_out, ubiquiti_only=ubiquiti_only):
+            by_mac[entry.mac_address] = entry
+        for dhcp_entry in parse_edgeos_dhcp_leases(dhcp_out, ubiquiti_only=ubiquiti_only):
+            by_mac[dhcp_entry.mac_address] = dhcp_entry
+        return list(by_mac.values())
+
+
+class UispRouterClient:
+    """
+    Live HTTPS REST client for Ubiquiti UISP / UniFi gateways.
+    Queries ARP/neighbor tables and extracts Ubiquiti airMAX radio MACs.
+    """
+
+    def __init__(self, host_ip: str, api_token: str = "", port: int = 443, timeout_sec: float = 8.0) -> None:
+        self.host_ip = host_ip
+        self.api_token = api_token
+        self.port = port
+        self.timeout_sec = timeout_sec
+
+    def fetch_neighbors_sync(self, ubiquiti_only: bool = True) -> list[RouterNeighborEntry]:
+        import json
+        import ssl
+        from urllib import request
+
+        ctx = ssl.create_default_context()
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        url = f"https://{self.host_ip}:{self.port}/nms/api/v2.1/devices/arp"
+        req = request.Request(
+            url,
+            headers={
+                "Accept": "application/json",
+                "x-auth-token": self.api_token,
+            },
+            method="GET",
+        )
+        with request.urlopen(req, context=ctx, timeout=self.timeout_sec) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+        items = payload if isinstance(payload, list) else payload.get("items", [])
+        return parse_uisp_arp_payload(items, ubiquiti_only=ubiquiti_only)
+

@@ -24,6 +24,7 @@ from airmanager_agent.airos.simulator import (
     generate_simulated_airos_status,
 )
 from airmanager_agent.config import AgentConfig, agent_config
+from airmanager_agent.routers.ubiquiti import EdgeOSRouterClient, UispRouterClient
 from airmanager_agent.scanner.cidr_scanner import RoutedSubnetScanner
 
 
@@ -97,14 +98,58 @@ class AgentScheduler:
             return client.kick_station(client_mac)
 
         if t_type in ("block_client", "unblock_client"):
+            ap_ip = str(payload.get("ap_ip") or "")
             client_mac = str(payload.get("client_mac") or "")
             block = t_type == "block_client"
-            sample_cfg = "wireless.1.status=enabled\n"
-            updated_cfg = update_system_cfg_mac_acl(sample_cfg, client_mac, block=block)
+            if self.config.simulator_mode or not ap_ip:
+                sample_cfg = "wireless.1.status=enabled\n"
+                updated_cfg = update_system_cfg_mac_acl(sample_cfg, client_mac, block=block)
+                return {
+                    "action": t_type,
+                    "client_mac": client_mac,
+                    "acl_lines_applied": updated_cfg.splitlines(),
+                    "simulated": True,
+                }
+            client = AirOS8Client(
+                host_ip=ap_ip,
+                username=self.config.default_airos_user,
+                password=self.config.default_airos_password,
+            )
+            client.login()
+            return client.set_mac_acl(client_mac, block=block)
+
+        if t_type == "probe_device":
+            target_ip = str(payload.get("current_ip") or payload.get("ap_ip") or "")
+            if self.config.simulator_mode or not target_ip:
+                return {"action": "probe_device", "target_ip": target_ip, "simulated": True}
+            client = AirOS8Client(
+                host_ip=target_ip,
+                username=self.config.default_airos_user,
+                password=self.config.default_airos_password,
+            )
+            client.login()
+            dev_status = client.fetch_status()
+            if dev_status.get("role") == "ap":
+                dev_status["clients"] = client.fetch_stations(previous_counters=self._byte_counters)
+            self.backend.post_json("/api/v1/agent/telemetry-report", {"devices": [dev_status]})
+            return {"action": "probe_device", "device": dev_status["hostname"], "ip": target_ip}
+
+        if t_type == "sync_router":
+            host_ip = str(payload.get("host_ip") or "")
+            r_type = str(payload.get("router_type") or "edgerouter")
+            if self.config.simulator_mode or not host_ip:
+                return {"action": "sync_router", "host_ip": host_ip, "neighbors_found": 20, "simulated": True}
+            if r_type == "edgerouter":
+                er = EdgeOSRouterClient(host_ip=host_ip, username=self.config.default_airos_user)
+                neighbors = await er.fetch_neighbors(ubiquiti_only=True)
+            else:
+                uisp = UispRouterClient(host_ip=host_ip)
+                neighbors = uisp.fetch_neighbors_sync(ubiquiti_only=True)
             return {
-                "action": t_type,
-                "client_mac": client_mac,
-                "acl_lines_applied": updated_cfg.splitlines(),
+                "action": "sync_router",
+                "host_ip": host_ip,
+                "neighbors_found": len(neighbors),
+                "neighbors": [n.to_dict() for n in neighbors],
             }
 
         if t_type == "reboot_device":

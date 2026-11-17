@@ -297,5 +297,58 @@ class AirOS8Client:
         mac = normalize_mac(client_mac)
         return self._request_json("POST", "/kick.cgi", form_data={"sta_mac": mac, "ifname": "ath0"})
 
+    def fetch_system_cfg(self) -> str:
+        """Downloads current `/tmp/system.cfg` from airOS 8 via GET `/cfg.cgi`."""
+        url = f"{self.base_url}/cfg.cgi"
+        headers = {"User-Agent": "AirManager-Linux-Agent/1.0"}
+        if self.csrf_token:
+            headers["X-CSRF-ID"] = self.csrf_token
+        req = request.Request(url, headers=headers, method="GET")
+        with self._opener.open(req, timeout=self.timeout_sec) as resp:
+            return resp.read().decode("utf-8", errors="replace")
+
+    def upload_and_apply_system_cfg(self, cfg_content: str) -> dict[str, Any]:
+        """Uploads modified `system.cfg` via multipart/form-data to `/cfg.cgi` and triggers `/apply.cgi`."""
+        boundary = f"----AirManagerBoundary{int(time.time() * 1000)}"
+        body_lines = [
+            f"--{boundary}",
+            'Content-Disposition: form-data; name="cfgfile"; filename="system.cfg"',
+            "Content-Type: application/octet-stream",
+            "",
+            cfg_content,
+            f"--{boundary}--",
+            "",
+        ]
+        body_bytes = "\r\n".join(body_lines).encode("utf-8")
+        headers = {
+            "Content-Type": f"multipart/form-data; boundary={boundary}",
+            "User-Agent": "AirManager-Linux-Agent/1.0",
+        }
+        if self.csrf_token:
+            headers["X-CSRF-ID"] = self.csrf_token
+
+        upload_req = request.Request(
+            f"{self.base_url}/cfg.cgi",
+            data=body_bytes,
+            headers=headers,
+            method="POST",
+        )
+        with self._opener.open(upload_req, timeout=self.timeout_sec) as resp:
+            _ = resp.read()
+
+        apply_res = self._request_json("POST", "/apply.cgi", form_data={"testmode": ""})
+        return {"applied": True, "response": apply_res}
+
+    def set_mac_acl(self, client_mac: str, block: bool) -> dict[str, Any]:
+        """Reads `/cfg.cgi`, updates `wireless.1.mac_acl.*` for `client_mac`, and applies it."""
+        current_cfg = self.fetch_system_cfg()
+        updated_cfg = update_system_cfg_mac_acl(current_cfg, client_mac, block=block)
+        apply_result = self.upload_and_apply_system_cfg(updated_cfg)
+        return {
+            "client_mac": normalize_mac(client_mac),
+            "blocked": block,
+            **apply_result,
+        }
+
     def reboot(self) -> dict[str, Any]:
         return self._request_json("POST", "/reboot.cgi")
