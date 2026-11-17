@@ -277,8 +277,11 @@ class AirManagerRepository:
                 "updated_at": str(r["updated_at"]),
             }
             if include_secret:
-                raw_enc = bytes(r["encrypted_password"])
-                item["password"] = decrypt_secret(raw_enc)
+                try:
+                    raw_enc = bytes(r["encrypted_password"])
+                    item["password"] = decrypt_secret(raw_enc)
+                except Exception:
+                    item["password"] = ""
             result.append(item)
         return result
 
@@ -293,7 +296,7 @@ class AirManagerRepository:
         now = utc_now_iso()
         encrypted = encrypt_secret(password)
         if is_default:
-            self._execute("UPDATE credential_profiles SET is_default = 0")
+            self._execute("UPDATE credential_profiles SET is_default = FALSE")
 
         existing = self._fetch_one("SELECT id, created_at FROM credential_profiles WHERE name = ?", (name.strip(),))
         if existing:
@@ -308,7 +311,7 @@ class AirManagerRepository:
                     updated_at = ?
                 WHERE id = ?
                 """,
-                (username.strip(), encrypted, int(https_port), 1 if is_default else 0, now, cred_id),
+                (username.strip(), encrypted, int(https_port), bool(is_default), now, cred_id),
             )
             created_at = str(existing["created_at"])
         else:
@@ -319,7 +322,7 @@ class AirManagerRepository:
                 INSERT INTO credential_profiles (id, name, username, encrypted_password, https_port, is_default, created_at, updated_at)
                 VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """,
-                (cred_id, name.strip(), username.strip(), encrypted, int(https_port), 1 if is_default else 0, now, now),
+                (cred_id, name.strip(), username.strip(), encrypted, int(https_port), bool(is_default), now, now),
             )
         return {
             "id": cred_id,
@@ -401,7 +404,7 @@ class AirManagerRepository:
                 name.strip(),
                 site_name,
                 vlan_id,
-                1 if scan_enabled else 0,
+                bool(scan_enabled),
                 int(scan_interval_sec),
                 default_credential_id,
                 None,
@@ -473,7 +476,7 @@ class AirManagerRepository:
                 router_type,
                 int(port),
                 credential_id,
-                1 if enabled else 0,
+                bool(enabled),
                 None,
                 "never",
                 0,
@@ -756,7 +759,7 @@ class AirManagerRepository:
                         c.get("remote_hostname"),
                         c.get("remote_model", "Loco 5AC"),
                         c.get("remote_firmware", "WA.v8.7.11"),
-                        1 if c.get("is_connected", True) else 0,
+                        bool(c.get("is_connected", True)),
                         signal,
                         int(c.get("remote_signal_dbm") or (signal - 1)),
                         chain0,
@@ -803,8 +806,8 @@ class AirManagerRepository:
                         c.get("remote_hostname", f"Loco5AC-{c_mac[-5:].replace(':', '')}"),
                         c.get("remote_model", "Loco 5AC"),
                         c.get("remote_firmware", "WA.v8.7.11"),
-                        1 if c.get("is_connected", True) else 0,
-                        1 if c.get("is_blocked", False) else 0,
+                        bool(c.get("is_connected", True)),
+                        bool(c.get("is_blocked", False)),
                         signal,
                         int(c.get("remote_signal_dbm") or (signal - 1)),
                         chain0,
@@ -861,9 +864,9 @@ class AirManagerRepository:
             SELECT d.*,
                    s.name AS subnet_name,
                    s.cidr_block AS subnet_cidr,
-                   (SELECT COUNT(*) FROM wireless_clients wc WHERE wc.ap_device_id = d.id AND wc.is_connected = 1) AS connected_clients_count,
-                   (SELECT COALESCE(SUM(wc.tx_throughput_kbps), 0) FROM wireless_clients wc WHERE wc.ap_device_id = d.id AND wc.is_connected = 1) AS total_tx_kbps,
-                   (SELECT COALESCE(SUM(wc.rx_throughput_kbps), 0) FROM wireless_clients wc WHERE wc.ap_device_id = d.id AND wc.is_connected = 1) AS total_rx_kbps
+                   (SELECT COUNT(*) FROM wireless_clients wc WHERE wc.ap_device_id = d.id AND wc.is_connected = TRUE) AS connected_clients_count,
+                   (SELECT COALESCE(SUM(wc.tx_throughput_kbps), 0) FROM wireless_clients wc WHERE wc.ap_device_id = d.id AND wc.is_connected = TRUE) AS total_tx_kbps,
+                   (SELECT COALESCE(SUM(wc.rx_throughput_kbps), 0) FROM wireless_clients wc WHERE wc.ap_device_id = d.id AND wc.is_connected = TRUE) AS total_rx_kbps
             FROM devices d
             LEFT JOIN subnets s ON s.id = d.subnet_id
             WHERE {where_sql}
@@ -918,11 +921,11 @@ class AirManagerRepository:
         elif health_filter == "low_capacity":
             clauses.append("wc.airmax_capacity_pct < 65")
         elif health_filter == "blocked":
-            clauses.append("wc.is_blocked = 1")
+            clauses.append("wc.is_blocked = TRUE")
         elif health_filter == "offline":
-            clauses.append("wc.is_connected = 0")
+            clauses.append("wc.is_connected = FALSE")
         elif health_filter == "connected":
-            clauses.append("wc.is_connected = 1 AND wc.is_blocked = 0")
+            clauses.append("wc.is_connected = TRUE AND wc.is_blocked = FALSE")
 
         if search:
             q = f"%{search.strip().lower()}%"
@@ -1143,7 +1146,7 @@ class AirManagerRepository:
             """
             UPDATE wireless_clients SET
                 connection_uptime_sec = 5,
-                is_connected = 1,
+                is_connected = TRUE,
                 signal_dbm = ?,
                 chain0_dbm = ?,
                 chain1_dbm = ?,
@@ -1187,12 +1190,12 @@ class AirManagerRepository:
             UPDATE wireless_clients SET
                 is_blocked = ?,
                 is_connected = ?,
-                tx_throughput_kbps = CASE WHEN ? = 1 THEN 0.0 ELSE tx_throughput_kbps END,
-                rx_throughput_kbps = CASE WHEN ? = 1 THEN 0.0 ELSE rx_throughput_kbps END,
+                tx_throughput_kbps = CASE WHEN ? THEN 0.0 ELSE tx_throughput_kbps END,
+                rx_throughput_kbps = CASE WHEN ? THEN 0.0 ELSE rx_throughput_kbps END,
                 last_seen_at = ?
             WHERE id = ?
             """,
-            (1 if block else 0, 0 if block else 1, 1 if block else 0, 1 if block else 0, now, client_id),
+            (bool(block), not bool(block), bool(block), bool(block), now, client_id),
         )
         return self.create_task(
             task_type="block_client" if block else "unblock_client",

@@ -483,3 +483,5 @@ class AirManagerDispatcher:
             raise APIError(404, f"Endpoint not found: {method} {path}")
         except APIError as err:
             return err.status_code, {"detail": err.detail}
+        except Exception as exc:
+            return 500, {"detail": f"Internal error ({type(exc).__name__}): {exc}"}
